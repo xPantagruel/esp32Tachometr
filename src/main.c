@@ -101,14 +101,14 @@ esp_err_t get_km_traveled(float *km_traveled) {
     nvs_close(nvs_handle);
     return err;
 }
-void Wheel_Revolution_Task(void *params) {
+void Wheel_Rotation_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
     while (true) {
         if (xQueueReceive(interruptQueue1, &pinNumber, portMAX_DELAY)) {
             float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
 
-            printf("Time (ms): %f\n", current_time_ms);
+            // printf("Time (ms): %f\n", current_time_ms);
 
             if ((current_time_ms - debounce->last_button_press_time) > DEBOUNCE_DELAY_MS) {
                 debounce->last_button_press_time = current_time_ms;
@@ -121,7 +121,7 @@ void Wheel_Revolution_Task(void *params) {
 
                     // Calculate speed in km/h
                     speed_kmph = distance_km / time_hours;
-                    printf("Current Speed: %.2f km/h\n", speed_kmph);
+                    // printf("Current Speed: %.2f km/h\n", speed_kmph);
 
                     km_traveled += distance_km;
                     // store km_traveled value in NVS
@@ -130,11 +130,28 @@ void Wheel_Revolution_Task(void *params) {
                         printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
                     }
 
-                    printf("Km Traveled: %.2f km\n", km_traveled);
+                    // printf("Km Traveled: %.2f km\n", km_traveled);
                 }
 
                 debounce->last_interrupt_time = current_time_ms;
             }
+        }
+    }
+}
+
+void calculateSpeed(TimerHandle_t xTimer) {
+    debounce_t *debounce = (debounce_t *)pvTimerGetTimerID(xTimer);
+
+    float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
+
+    // Check if more than 1 second has passed since the last interrupt
+    if ((current_time_ms - debounce->last_interrupt_time) >= TIMER_INTERVAL_MS) {
+        float time_diff = current_time_ms - debounce->last_interrupt_time;
+        if (time_diff > 0 && debounce->last_button_press_time > 0) { // Check for non-zero time difference to avoid division by zero
+            float time_hours = time_diff / (1000.0 * 3600.0);
+            float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
+            // Calculate speed in km/h
+            speed_kmph = distance_km / time_hours;
         }
     }
 }
@@ -177,24 +194,6 @@ void Second_Button_Handle(void *params) {
             }
 
             vTaskDelay(pdMS_TO_TICKS(BUTTON2_DEBOUNCE_DELAY_MS));
-        }
-    }
-}
-
-
-void calculateSpeed(TimerHandle_t xTimer) {
-    debounce_t *debounce = (debounce_t *)pvTimerGetTimerID(xTimer);
-
-    float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
-
-    // Check if more than 1 second has passed since the last interrupt
-    if ((current_time_ms - debounce->last_interrupt_time) >= TIMER_INTERVAL_MS) {
-        float time_diff = current_time_ms - debounce->last_interrupt_time;
-        if (time_diff > 0 && debounce->last_button_press_time > 0) { // Check for non-zero time difference to avoid division by zero
-            float time_hours = time_diff / (1000.0 * 3600.0);
-            float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
-            // Calculate speed in km/h
-            speed_kmph = distance_km / time_hours;
         }
     }
 }
@@ -260,7 +259,7 @@ void app_main(void)
 
     gpio_install_isr_service(0);
     gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler1, (void *)INPUT_PIN);
-    xTaskCreate(Wheel_Revolution_Task, "Wheel_Revolution_Task", 2048, (void *)&debounce, 1, NULL);
+    xTaskCreate(Wheel_Rotation_Task, "Wheel_Rotation_Task", 2048, (void *)&debounce, 1, NULL);
 
     // ============================================= button 2 =============================================
     // Initialize debounce structure for button 2
