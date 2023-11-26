@@ -1,3 +1,12 @@
+ /**
+ * @file main.c
+ * @brief Implements a SpeedoMeter application for a bicycle using ESP32.
+ *        Calculates speed, distance, and average speed. Handles button presses, 
+ *        uses NVS for data storage, and displays information on an SSD1306 screen.
+ * @author Matěj Macek (xmacek27)
+ * @date November 26, 2023
+ */
+
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,12 +29,11 @@
 #define WHEEL_DIAMETER_CM 200
 #define TIMER_INTERVAL_MS 1000 // 1 second interval for speed calculation
 typedef struct {
-    uint8_t pin;                                                                                                                                                                                          
-    bool inverted;
-    uint16_t history;
-    TickType_t last_interrupt_time;
-    TickType_t last_button_press_time;
-    uint64_t start_time_ms; // To track start time in milliseconds
+    uint8_t pin; // GPIO pin number                                                                                                                                                                                          
+    bool inverted; // true if button is active low
+    TickType_t last_interrupt_time; // Last interrupt time in milliseconds
+    TickType_t last_button_press_time; // Last button press time in milliseconds
+    uint64_t start_time_ms; // To track start time in milliseconds for calculating time spent
 } debounce_t;
 
 enum DisplayState {
@@ -34,18 +42,17 @@ enum DisplayState {
     DISPLAY_AVG_SPEED
 };
 
-int state = 0;
 float speed_kmph = 0.0; // Track the speed in km/h
 float km_traveled = 0.0; // Track the distance traveled
 uint64_t time_spent_ms = 0.0; // Track the time spent in milliseconds
 
-uint64_t start_time_us = 0;
+uint64_t start_time_us = 0; // To track start time in microseconds for calculating time spent
 QueueHandle_t interruptQueue1; // Queue for button 1
 QueueHandle_t interruptQueue2; // Queue for button 2
 
 enum DisplayState current_display_state = DISPLAY_SPEED; // Initialize to display speed initially
 
-TimerHandle_t speedTimer;
+TimerHandle_t speedTimer; // Timer to calculate speed every second
 
 static void IRAM_ATTR gpio_interrupt_handler1(void *args) {
     int pinNumber = (int)args;
@@ -75,6 +82,7 @@ esp_err_t store_km_traveled(float km_traveled) {
     return err;
 }
 
+// Function to get km_traveled value from NVS
 esp_err_t get_km_traveled(float *km_traveled) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
@@ -159,6 +167,7 @@ esp_err_t get_time_spent(uint64_t  *time_spent_ms) {
     return err;
 }
 
+// Task to calculate speed and distance traveled
 void Wheel_Rotation_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -166,29 +175,21 @@ void Wheel_Rotation_Task(void *params) {
         if (xQueueReceive(interruptQueue1, &pinNumber, portMAX_DELAY)) {
             float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
 
-            // printf("Time (ms): %f\n", current_time_ms);
-
             if ((current_time_ms - debounce->last_button_press_time) > DEBOUNCE_DELAY_MS) {
                 debounce->last_button_press_time = current_time_ms;
-                printf("1. Button Pressed\n");
 
                 if (debounce->last_button_press_time > 0) {
                     float time_hours = (float)(debounce->last_button_press_time - debounce->last_interrupt_time) / (1000.0 * 3600.0);
-                    printf("Time (hours): %f\n", time_hours);
                     float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
 
                     // Calculate speed in km/h
                     speed_kmph = distance_km / time_hours;
-                    // printf("Current Speed: %.2f km/h\n", speed_kmph);
-
                     km_traveled += distance_km;
                     // store km_traveled value in NVS
                     esp_err_t store_result = store_km_traveled(km_traveled);
                     if (store_result != ESP_OK) {
                         printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
                     }
-
-                    // printf("Km Traveled: %.2f km\n", km_traveled);
                 }
 
                 debounce->last_interrupt_time = current_time_ms;
@@ -197,6 +198,7 @@ void Wheel_Rotation_Task(void *params) {
     }
 }
 
+// Timer callback function to calculate speed every second
 void calculateSpeed(TimerHandle_t xTimer) {
     debounce_t *debounce = (debounce_t *)pvTimerGetTimerID(xTimer);
 
@@ -214,6 +216,9 @@ void calculateSpeed(TimerHandle_t xTimer) {
     }
 }
 
+// Task to handle button 2 press
+//      Short press: Cycle through display states
+//      Long press: Reset km_traveled and time_spent
 void Second_Button_Handle(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -237,7 +242,6 @@ void Second_Button_Handle(void *params) {
                     buttonPressed = false;
 
                     if (pressDuration >= pdMS_TO_TICKS(LONG_PRESS_DURATION_MS)) { // LONG PRESS
-                        printf("Long press detected\n");
                         km_traveled = 0.0; // Reset km_traveled
                         time_spent_ms = 0.0; // Reset time_spent
                         // store km_traveled value in NVS
@@ -246,7 +250,6 @@ void Second_Button_Handle(void *params) {
                             printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
                         }
                     } else {
-                        printf("Short press detected\n"); // SHORT PRESS
                         current_display_state = (current_display_state + 1) % 3; // Cycle through display states
                     }
                 }
@@ -281,7 +284,6 @@ void app_main(void)
         printf("Error (%s) reading time_spent from NVS!\n", esp_err_to_name(get_result));
     }
 
-    printf("Retrieved km_traveled value: %.2f\n", km_traveled);
     // ============================================= Display =============================================
 
     SSD1306_t dev;
@@ -300,8 +302,8 @@ void app_main(void)
     // ============================================= button 1 =============================================
 
     // Setup interrupt queue
-    interruptQueue1 = xQueueCreate(10, sizeof(int));
-    interruptQueue2 = xQueueCreate(10, sizeof(int));
+    interruptQueue1 = xQueueCreate(10, sizeof(int)); // Queue for button 1
+    interruptQueue2 = xQueueCreate(10, sizeof(int)); // Queue for button 2
 
     if (interruptQueue1 == NULL || interruptQueue2 == NULL) {
         return;
@@ -311,44 +313,43 @@ void app_main(void)
     debounce_t debounce;
     debounce.pin = INPUT_PIN;
     debounce.inverted = false;
-    debounce.history = 0;
     debounce.last_interrupt_time = 0;
     debounce.last_button_press_time = 0;
     debounce.start_time_ms = 0;
 
     esp_rom_gpio_pad_select_gpio(INPUT_PIN);
     gpio_set_direction(INPUT_PIN, GPIO_MODE_INPUT);
-    gpio_pullup_en(INPUT_PIN);  // Enable internal pull-up resistor
-    gpio_pulldown_dis(INPUT_PIN);  // Disable internal pull-down resistor
+    gpio_pullup_en(INPUT_PIN);
+    gpio_pulldown_dis(INPUT_PIN);
     gpio_set_intr_type(INPUT_PIN, GPIO_INTR_ANYEDGE); // Change interrupt type to GPIO_INTR_ANYEDGE for detecting both rising and falling edges
 
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler1, (void *)INPUT_PIN);
-    xTaskCreate(Wheel_Rotation_Task, "Wheel_Rotation_Task", 2048, (void *)&debounce, 1, NULL);
+    gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler1, (void *)INPUT_PIN); // Add interrupt handler for button 1
+    xTaskCreate(Wheel_Rotation_Task, "Wheel_Rotation_Task", 2048, (void *)&debounce, 1, NULL); // Task to calculate speed and distance traveled
 
     // ============================================= button 2 =============================================
+
     // Initialize debounce structure for button 2
     debounce_t debounce2;
     debounce2.pin = SECOND_INPUT_PIN;
     debounce2.inverted = false;
-    debounce2.history = 0;
     debounce2.last_interrupt_time = 0;
     debounce2.last_button_press_time = 0;
     debounce2.start_time_ms = 0;
 
     esp_rom_gpio_pad_select_gpio(SECOND_INPUT_PIN);
     gpio_set_direction(SECOND_INPUT_PIN, GPIO_MODE_INPUT);
-    gpio_pullup_en(SECOND_INPUT_PIN);  // Enable internal pull-up resistor
-    gpio_pulldown_dis(SECOND_INPUT_PIN);  // Disable internal pull-down resistor
+    gpio_pullup_en(SECOND_INPUT_PIN);
+    gpio_pulldown_dis(SECOND_INPUT_PIN);
     gpio_set_intr_type(SECOND_INPUT_PIN, GPIO_INTR_ANYEDGE); // Change interrupt type to GPIO_INTR_ANYEDGE for detecting both rising and falling edges
 
-    gpio_isr_handler_add(SECOND_INPUT_PIN, gpio_interrupt_handler2, (void *)SECOND_INPUT_PIN);
-    xTaskCreate(Second_Button_Handle, "Second_Button_Handle", 2048, (void *)&debounce2, 1, NULL);
+    gpio_isr_handler_add(SECOND_INPUT_PIN, gpio_interrupt_handler2, (void *)SECOND_INPUT_PIN); // Add interrupt handler for button 2
+    xTaskCreate(Second_Button_Handle, "Second_Button_Handle", 2048, (void *)&debounce2, 1, NULL); // Task to handle button 2 press
 
     // Initialize start time in microseconds
     debounce.start_time_ms = esp_timer_get_time() / 1000;
 
-    // Create the software timer
+    // Create a timer to calculate speed every second
     speedTimer = xTimerCreate("SpeedTimer", pdMS_TO_TICKS(TIMER_INTERVAL_MS), pdTRUE, (void *)&debounce, calculateSpeed);
 
     if (speedTimer != NULL) {
@@ -358,10 +359,10 @@ void app_main(void)
         printf("Failed to create speed timer.\n");
     }
 
-    float total_time_hours = 0.0;
-    float average_speed_kmph = 0.0;
+    float total_time_hours = 0.0; // To track total time spent in hours
+    float average_speed_kmph = 0.0; // To track average speed in km/h
 
-    enum DisplayState previous_display_state = current_display_state; // Initialize to display speed initially
+    enum DisplayState previous_display_state = current_display_state; // Initialize to display "SPEED" initially
 
     while (1)
     {
@@ -397,7 +398,7 @@ void app_main(void)
 
             case DISPLAY_AVG_SPEED:
                 if (km_traveled > 0) {
-                    printf("Time spent (ms): %llu\n", time_spent_ms);
+                    // Calculate average speed in km/h using time spent in milliseconds and distance traveled in kilometers 
                     total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms + time_spent_ms) / (1000.0 * 3600.0); 
                     average_speed_kmph = km_traveled / total_time_hours;
 
