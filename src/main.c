@@ -16,7 +16,7 @@
 
 #define DEBOUNCE_DELAY_MS 200 // TODO may need to change this value to not miss interrupts (set to less)
 #define BUTTON2_DEBOUNCE_DELAY_MS 50 // TODO may need to change this value to not miss interrupts (set to less)
-
+#define LONG_PRESS_DURATION_MS 1000
 #define WHEEL_DIAMETER_CM 120
 #define TIMER_INTERVAL_MS 1000 // 2.5 second interval for speed calculation
 typedef struct {
@@ -142,13 +142,45 @@ void Wheel_Revolution_Task(void *params) {
 void Second_Button_Handle(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
+    bool buttonPressed = false;
+    TickType_t pressStartTime = 0;
+
     while (true) {
         if (xQueueReceive(interruptQueue2, &pinNumber, portMAX_DELAY)) {
-            float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
+            bool currentButtonState = gpio_get_level(debounce->pin);
 
+            if (currentButtonState == debounce->inverted) {
+                if (!buttonPressed) {
+                    // Button has been pressed
+                    buttonPressed = true;
+                    pressStartTime = xTaskGetTickCount();
+                }
+            } else {
+                if (buttonPressed) {
+                    // Button has been released
+                    TickType_t pressDuration = xTaskGetTickCount() - pressStartTime;
+                    buttonPressed = false;
+
+                    if (pressDuration >= pdMS_TO_TICKS(LONG_PRESS_DURATION_MS)) { // LONG PRESS
+                        printf("Long press detected\n");
+                        km_traveled = 0.0; // Reset km_traveled
+                        // store km_traveled value in NVS
+                        esp_err_t store_result = store_km_traveled(km_traveled);
+                        if (store_result != ESP_OK) {
+                            printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
+                        }
+                    } else {
+                        printf("Short press detected\n"); // SHORT PRESS
+                        current_display_state = (current_display_state + 1) % 3; // Cycle through display states
+                    }
+                }
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(BUTTON2_DEBOUNCE_DELAY_MS));
         }
     }
 }
+
 
 void calculateSpeed(TimerHandle_t xTimer) {
     debounce_t *debounce = (debounce_t *)pvTimerGetTimerID(xTimer);
@@ -163,10 +195,6 @@ void calculateSpeed(TimerHandle_t xTimer) {
             float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
             // Calculate speed in km/h
             speed_kmph = distance_km / time_hours;
-
-            printf("Calculated Speed: %.2f km/h\n", speed_kmph);
-        } else {
-            printf("No valid time difference to calculate speed.\n");
         }
     }
 }
@@ -315,7 +343,14 @@ void app_main(void)
                     char average_speed_str0[20];
                     snprintf(average_speed_str0, sizeof(average_speed_str0), "AVERAGE KM/hr");
                     ssd1306_display_text(&dev, 7, average_speed_str0, strlen(average_speed_str0), false);
-                }
+                } else {
+                    char average_speed_str[20];
+                    snprintf(average_speed_str, sizeof(average_speed_str), "%.2f", 0.0);
+                    ssd1306_display_text_x3(&dev, 3, average_speed_str, strlen(average_speed_str), false);
+
+                    char average_speed_str0[20];
+                    snprintf(average_speed_str0, sizeof(average_speed_str0), "AVERAGE KM/hr");
+                    ssd1306_display_text(&dev, 7, average_speed_str0, strlen(average_speed_str0), false);}
                 break;
 
             default:
