@@ -14,13 +14,13 @@
 #define INPUT_PIN 16
 #define SECOND_INPUT_PIN 26
 
-#define DEBOUNCE_DELAY_MS 200 // TODO may need to change this value to not miss interrupts (set to less)
-#define BUTTON2_DEBOUNCE_DELAY_MS 50 // TODO may need to change this value to not miss interrupts (set to less)
+#define DEBOUNCE_DELAY_MS 200 
+#define BUTTON2_DEBOUNCE_DELAY_MS 50 
 #define LONG_PRESS_DURATION_MS 1000
-#define WHEEL_DIAMETER_CM 120
-#define TIMER_INTERVAL_MS 1000 // 2.5 second interval for speed calculation
+#define WHEEL_DIAMETER_CM 200
+#define TIMER_INTERVAL_MS 1000 // 1 second interval for speed calculation
 typedef struct {
-    uint8_t pin;
+    uint8_t pin;                                                                                                                                                                                          
     bool inverted;
     uint16_t history;
     TickType_t last_interrupt_time;
@@ -37,6 +37,7 @@ enum DisplayState {
 int state = 0;
 float speed_kmph = 0.0; // Track the speed in km/h
 float km_traveled = 0.0; // Track the distance traveled
+uint64_t time_spent_ms = 0.0; // Track the time spent in milliseconds
 
 uint64_t start_time_us = 0;
 QueueHandle_t interruptQueue1; // Queue for button 1
@@ -101,6 +102,63 @@ esp_err_t get_km_traveled(float *km_traveled) {
     nvs_close(nvs_handle);
     return err;
 }
+
+// Function to store time spent value in NVS
+esp_err_t store_time_spent(uint64_t  time_spent_ms) {
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        printf("Error (%s) initializing NVS\n", esp_err_to_name(err));
+        return err;
+    }
+
+    nvs_handle_t nvs_handle;
+    err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        printf("Error (%s) opening NVS handle\n", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u64(nvs_handle, "time_spent", time_spent_ms);
+    if (err != ESP_OK) {
+        printf("Error (%s) writing time_spent to NVS\n", esp_err_to_name(err));
+    }
+
+    nvs_close(nvs_handle);
+    return err;
+}
+
+// Function to get time spent from NVS
+esp_err_t get_time_spent(uint64_t  *time_spent_ms) {
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        printf("Error (%s) initializing NVS\n", esp_err_to_name(err));
+        return err;
+    }
+
+    nvs_handle_t nvs_handle;
+    err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        printf("Error (%s) opening NVS handle\n", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_get_u64(nvs_handle, "time_spent", time_spent_ms);
+    switch (err) {
+        case ESP_OK:
+            // Value successfully retrieved
+            break;
+        case ESP_ERR_NVS_NOT_FOUND:
+            // The value is not initialized in NVS yet
+            printf("time_spent not found in NVS, initializing...\n");
+            break;
+        default:
+            printf("Error (%s) reading time_spent from NVS\n", esp_err_to_name(err));
+    }
+
+    nvs_close(nvs_handle);
+    return err;
+}
+
 void Wheel_Rotation_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -181,6 +239,7 @@ void Second_Button_Handle(void *params) {
                     if (pressDuration >= pdMS_TO_TICKS(LONG_PRESS_DURATION_MS)) { // LONG PRESS
                         printf("Long press detected\n");
                         km_traveled = 0.0; // Reset km_traveled
+                        time_spent_ms = 0.0; // Reset time_spent
                         // store km_traveled value in NVS
                         esp_err_t store_result = store_km_traveled(km_traveled);
                         if (store_result != ESP_OK) {
@@ -214,6 +273,12 @@ void app_main(void)
     esp_err_t get_result = get_km_traveled(&km_traveled);
     if (get_result != ESP_OK) {
         printf("Error (%s) reading km_traveled from NVS!\n", esp_err_to_name(get_result));
+    }
+
+    // Retrieving time_spent value from NVS
+    get_result = get_time_spent(&time_spent_ms);
+    if (get_result != ESP_OK) {
+        printf("Error (%s) reading time_spent from NVS!\n", esp_err_to_name(get_result));
     }
 
     printf("Retrieved km_traveled value: %.2f\n", km_traveled);
@@ -325,14 +390,15 @@ void app_main(void)
                 ssd1306_display_text_x3(&dev, 3, distance_str, strlen(distance_str), false);
 
                 char distance_str0[20];
-                snprintf(distance_str0, sizeof(distance_str0), "KM");
+                snprintf(distance_str0, sizeof(distance_str0), "DISTANCE KM");
                 ssd1306_display_text(&dev, 7, distance_str0, strlen(distance_str0), false);
 
                 break;
 
             case DISPLAY_AVG_SPEED:
                 if (km_traveled > 0) {
-                    total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms) / (1000.0 * 3600.0);
+                    printf("Time spent (ms): %llu\n", time_spent_ms);
+                    total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms + time_spent_ms) / (1000.0 * 3600.0); 
                     average_speed_kmph = km_traveled / total_time_hours;
 
                     char average_speed_str[20];
@@ -354,7 +420,14 @@ void app_main(void)
 
             default:
                 break;
-    }
+        }
         vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        // Store time spent value in NVS
+        uint64_t store_time = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms + time_spent_ms);
+        esp_err_t store_result = store_time_spent(store_time);
+        if (store_result != ESP_OK) {
+            printf("Error (%s) storing time_spent in NVS!\n", esp_err_to_name(store_result));
         }
     }
+}
