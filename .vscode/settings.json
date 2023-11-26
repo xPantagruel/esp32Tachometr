@@ -1,0 +1,14 @@
+{
+  "files.associations": {
+    "*.embeddedhtml": "html",
+    "spi_master.h": "c",
+    "spi_types.h": "c",
+    "esp_bit_defs.h": "c",
+    "ssd1306.h": "c",
+    "queue.h": "c",
+    "stdio.h": "c",
+    "algorithm": "c",
+    "esp_timer.h": "c",
+    "timers.h": "c"
+  }
+}
