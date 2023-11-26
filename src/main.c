@@ -15,8 +15,10 @@
 #define SECOND_INPUT_PIN 26
 
 #define DEBOUNCE_DELAY_MS 200 // TODO may need to change this value to not miss interrupts (set to less)
+#define BUTTON2_DEBOUNCE_DELAY_MS 50 // TODO may need to change this value to not miss interrupts (set to less)
+
 #define WHEEL_DIAMETER_CM 120
-#define TIMER_INTERVAL_MS 2500 // 2.5 second interval for speed calculation
+#define TIMER_INTERVAL_MS 1000 // 2.5 second interval for speed calculation
 typedef struct {
     uint8_t pin;
     bool inverted;
@@ -144,16 +146,6 @@ void Second_Button_Handle(void *params) {
         if (xQueueReceive(interruptQueue2, &pinNumber, portMAX_DELAY)) {
             float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
 
-            if ((current_time_ms - debounce->last_button_press_time) > DEBOUNCE_DELAY_MS) {
-                debounce->last_button_press_time = current_time_ms;
-                printf("2. Button Pressed\n");
-
-                // Toggle the display state when button 2 is pressed
-                current_display_state = (current_display_state + 1) % 3; // Cycle through display states
-
-
-                debounce->last_interrupt_time = current_time_ms;
-            }
         }
     }
 }
@@ -166,7 +158,7 @@ void calculateSpeed(TimerHandle_t xTimer) {
     // Check if more than 1 second has passed since the last interrupt
     if ((current_time_ms - debounce->last_interrupt_time) >= TIMER_INTERVAL_MS) {
         float time_diff = current_time_ms - debounce->last_interrupt_time;
-        if (time_diff > 0) { // Check for non-zero time difference to avoid division by zero
+        if (time_diff > 0 && debounce->last_button_press_time > 0) { // Check for non-zero time difference to avoid division by zero
             float time_hours = time_diff / (1000.0 * 3600.0);
             float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
             // Calculate speed in km/h
@@ -190,7 +182,7 @@ void app_main(void)
         nvs_init_result = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_init_result);
-    
+
     // Retrieving km_traveled value from NVS
     esp_err_t get_result = get_km_traveled(&km_traveled);
     if (get_result != ESP_OK) {
