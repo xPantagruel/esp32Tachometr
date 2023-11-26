@@ -8,6 +8,7 @@
 #include "freertos/queue.h"
 #include "freertos/timers.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
 
 #define tag "SSD1306"
 #define INPUT_PIN 16
@@ -51,6 +52,53 @@ static void IRAM_ATTR gpio_interrupt_handler2(void *args) {
     int pinNumber = (int)args;
     xQueueSendFromISR(interruptQueue2, &pinNumber, NULL);
 }
+
+// Function to store km_traveled value in NVS
+esp_err_t store_km_traveled(float km_traveled) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        printf("Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+        return err;
+    }
+
+    // Save km_traveled to NVS
+    err = nvs_set_blob(nvs_handle, "km_traveled", &km_traveled, sizeof(km_traveled));
+    if (err != ESP_OK) {
+        printf("Error (%s) writing km_traveled to NVS!\n", esp_err_to_name(err));
+    }
+
+    nvs_close(nvs_handle);
+    return err;
+}
+
+esp_err_t get_km_traveled(float *km_traveled) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        printf("Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+        return err;
+    }
+
+    size_t size = sizeof(float); // Size of the variable
+
+    // Read km_traveled from NVS
+    err = nvs_get_blob(nvs_handle, "km_traveled", km_traveled, &size);
+    switch (err) {
+        case ESP_OK:
+            // Value successfully retrieved
+            break;
+        case ESP_ERR_NVS_NOT_FOUND:
+            // The value is not initialized in NVS yet
+            printf("km_traveled not found in NVS, initializing...\n");
+            break;
+        default:
+            printf("Error (%s) reading km_traveled from NVS!\n", esp_err_to_name(err));
+    }
+
+    nvs_close(nvs_handle);
+    return err;
+}
 void Wheel_Revolution_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -74,6 +122,12 @@ void Wheel_Revolution_Task(void *params) {
                     printf("Current Speed: %.2f km/h\n", speed_kmph);
 
                     km_traveled += distance_km;
+                    // store km_traveled value in NVS
+                    esp_err_t store_result = store_km_traveled(km_traveled);
+                    if (store_result != ESP_OK) {
+                        printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
+                    }
+
                     printf("Km Traveled: %.2f km\n", km_traveled);
                 }
 
@@ -127,6 +181,23 @@ void calculateSpeed(TimerHandle_t xTimer) {
 
 void app_main(void)
 {
+    // ============================================= NVS =============================================
+    // Initialize NVS
+    esp_err_t nvs_init_result = nvs_flash_init();
+    if (nvs_init_result == ESP_ERR_NVS_NO_FREE_PAGES || nvs_init_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs to be erased
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_init_result = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_init_result);
+    
+    // Retrieving km_traveled value from NVS
+    esp_err_t get_result = get_km_traveled(&km_traveled);
+    if (get_result != ESP_OK) {
+        printf("Error (%s) reading km_traveled from NVS!\n", esp_err_to_name(get_result));
+    }
+
+    printf("Retrieved km_traveled value: %.2f\n", km_traveled);
     // ============================================= Display =============================================
 
     SSD1306_t dev;
