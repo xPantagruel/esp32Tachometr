@@ -16,6 +16,20 @@
 #define DEBOUNCE_DELAY_MS 200 // TODO may need to change this value to not miss interrupts (set to less)
 #define WHEEL_DIAMETER_CM 120
 #define TIMER_INTERVAL_MS 2500 // 2.5 second interval for speed calculation
+typedef struct {
+    uint8_t pin;
+    bool inverted;
+    uint16_t history;
+    TickType_t last_interrupt_time;
+    TickType_t last_button_press_time;
+    uint64_t start_time_ms; // To track start time in milliseconds
+} debounce_t;
+
+enum DisplayState {
+    DISPLAY_SPEED,
+    DISPLAY_KM_TRAVELED,
+    DISPLAY_AVG_SPEED
+};
 
 int state = 0;
 float speed_kmph = 0.0; // Track the speed in km/h
@@ -25,17 +39,9 @@ uint64_t start_time_us = 0;
 QueueHandle_t interruptQueue1; // Queue for button 1
 QueueHandle_t interruptQueue2; // Queue for button 2
 
-// Add a new FreeRTOS software timer handle
-TimerHandle_t speedTimer;
+enum DisplayState current_display_state = DISPLAY_SPEED; // Initialize to display speed initially
 
-typedef struct {
-    uint8_t pin;
-    bool inverted;
-    uint16_t history;
-    TickType_t last_interrupt_time;
-    TickType_t last_button_press_time;
-    uint64_t start_time_ms; // To track start time in milliseconds
-} debounce_t;
+TimerHandle_t speedTimer;
 
 static void IRAM_ATTR gpio_interrupt_handler1(void *args) {
     int pinNumber = (int)args;
@@ -88,8 +94,9 @@ void Second_Button_Handle(void *params) {
                 debounce->last_button_press_time = current_time_ms;
                 printf("2. Button Pressed\n");
 
-                // Debug statements to check if queue is receiving items properly
-                printf("Received from interruptQueue2: %d\n", pinNumber);
+                // Toggle the display state when button 2 is pressed
+                current_display_state = (current_display_state + 1) % 3; // Cycle through display states
+
 
                 debounce->last_interrupt_time = current_time_ms;
             }
@@ -198,32 +205,59 @@ void app_main(void)
 
     float total_time_hours = 0.0;
     float average_speed_kmph = 0.0;
+
+    enum DisplayState previous_display_state = current_display_state; // Initialize to display speed initially
+
     while (1)
     {
-        // // Clear the screen
-        // ssd1306_clear_screen(&dev, false);
-
-        // Display speed in larger font at the center
-        char speed_str[20];
-        snprintf(speed_str, sizeof(speed_str), "Speed: %.2f", speed_kmph);
-        ssd1306_display_text(&dev, 3, speed_str, strlen(speed_str), true);
-
-        // Display distance below the speed text
-        char distance_str[20];
-        snprintf(distance_str, sizeof(distance_str), "Km : %.3f", km_traveled);
-        ssd1306_display_text(&dev, 5, distance_str, strlen(distance_str), false);
-
-        // Display average speed below the distance text
-        if (km_traveled > 0) {
-            total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms) / (1000.0 * 3600.0);
-            average_speed_kmph = km_traveled / total_time_hours;
-
-            char average_speed_str[20];
-            snprintf(average_speed_str, sizeof(average_speed_str), "Avg: %.2f", average_speed_kmph);
-            ssd1306_display_text(&dev, 7, average_speed_str, strlen(average_speed_str), false);
+        // Check if the display state has changed
+        if( previous_display_state != current_display_state ) {
+            // Clear the screen
+            ssd1306_clear_screen(&dev, false);
+            previous_display_state = current_display_state;
         }
 
+        // Display content based on the current state
+        switch (current_display_state) {
+            case DISPLAY_SPEED:
+                char speed_str[20];
+                snprintf(speed_str, sizeof(speed_str), "%.2f", speed_kmph);
+                ssd1306_display_text_x3(&dev, 3, speed_str, strlen(speed_str), false);
 
+                char speed_str0[20];
+                snprintf(speed_str0, sizeof(speed_str0), "KM/hr");
+                ssd1306_display_text(&dev, 7, speed_str0, strlen(speed_str0), false);
+                break;
+
+            case DISPLAY_KM_TRAVELED:
+                char distance_str[20];
+                snprintf(distance_str, sizeof(distance_str), "%.3f", km_traveled);
+                ssd1306_display_text_x3(&dev, 3, distance_str, strlen(distance_str), false);
+
+                char distance_str0[20];
+                snprintf(distance_str0, sizeof(distance_str0), "KM");
+                ssd1306_display_text(&dev, 7, distance_str0, strlen(distance_str0), false);
+
+                break;
+
+            case DISPLAY_AVG_SPEED:
+                if (km_traveled > 0) {
+                    total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms) / (1000.0 * 3600.0);
+                    average_speed_kmph = km_traveled / total_time_hours;
+
+                    char average_speed_str[20];
+                    snprintf(average_speed_str, sizeof(average_speed_str), "%.2f", average_speed_kmph);
+                    ssd1306_display_text_x3(&dev, 3, average_speed_str, strlen(average_speed_str), false);
+
+                    char average_speed_str0[20];
+                    snprintf(average_speed_str0, sizeof(average_speed_str0), "AVERAGE KM/hr");
+                    ssd1306_display_text(&dev, 7, average_speed_str0, strlen(average_speed_str0), false);
+                }
+                break;
+
+            default:
+                break;
+    }
         vTaskDelay(100 / portTICK_PERIOD_MS);
         }
     }
