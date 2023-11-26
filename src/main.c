@@ -11,14 +11,20 @@
 
 #define tag "SSD1306"
 #define INPUT_PIN 16
-#define LED_PIN 2
-#define DEBOUNCE_DELAY_MS 200
-#define WHEEL_DIAMETER_CM 62
+#define SECOND_INPUT_PIN 26
+
+#define DEBOUNCE_DELAY_MS 200 // TODO may need to change this value to not miss interrupts (set to less)
+#define WHEEL_DIAMETER_CM 120
 #define TIMER_INTERVAL_MS 2500 // 2.5 second interval for speed calculation
 
 int state = 0;
+float speed_kmph = 0.0; // Track the speed in km/h
+float km_traveled = 0.0; // Track the distance traveled
+
 uint64_t start_time_us = 0;
-QueueHandle_t interruptQueue;
+QueueHandle_t interruptQueue1; // Queue for button 1
+QueueHandle_t interruptQueue2; // Queue for button 2
+
 // Add a new FreeRTOS software timer handle
 TimerHandle_t speedTimer;
 
@@ -28,44 +34,62 @@ typedef struct {
     uint16_t history;
     TickType_t last_interrupt_time;
     TickType_t last_button_press_time;
-    float speed; // Calculated speed
-    float km_traveled; // Track the distance traveled
     uint64_t start_time_ms; // To track start time in milliseconds
-
 } debounce_t;
 
-static void IRAM_ATTR gpio_interrupt_handler(void *args) {
+static void IRAM_ATTR gpio_interrupt_handler1(void *args) {
     int pinNumber = (int)args;
-    xQueueSendFromISR(interruptQueue, &pinNumber, NULL);
+    xQueueSendFromISR(interruptQueue1, &pinNumber, NULL);
 }
-
+static void IRAM_ATTR gpio_interrupt_handler2(void *args) {
+    int pinNumber = (int)args;
+    xQueueSendFromISR(interruptQueue2, &pinNumber, NULL);
+}
 void Wheel_Revolution_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
     while (true) {
-        if (xQueueReceive(interruptQueue, &pinNumber, portMAX_DELAY)) {
+        if (xQueueReceive(interruptQueue1, &pinNumber, portMAX_DELAY)) {
             float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
 
             printf("Time (ms): %f\n", current_time_ms);
 
             if ((current_time_ms - debounce->last_button_press_time) > DEBOUNCE_DELAY_MS) {
                 debounce->last_button_press_time = current_time_ms;
-                printf("Button Pressed\n");
+                printf("1. Button Pressed\n");
 
                 if (debounce->last_button_press_time > 0) {
                     float time_hours = (float)(debounce->last_button_press_time - debounce->last_interrupt_time) / (1000.0 * 3600.0);
                     printf("Time (hours): %f\n", time_hours);
                     float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
+
                     // Calculate speed in km/h
-                    float speed_kmph = distance_km / time_hours;
+                    speed_kmph = distance_km / time_hours;
+                    printf("Current Speed: %.2f km/h\n", speed_kmph);
 
-                    // Update debounce's speed
-                    debounce->speed = speed_kmph;
-                    printf("Current Speed: %.2f km/h\n", debounce->speed);
-
-                    debounce->km_traveled += distance_km;
-                    printf("Km Traveled: %.2f km\n", debounce->km_traveled);
+                    km_traveled += distance_km;
+                    printf("Km Traveled: %.2f km\n", km_traveled);
                 }
+
+                debounce->last_interrupt_time = current_time_ms;
+            }
+        }
+    }
+}
+
+void Second_Button_Handle(void *params) {
+    int pinNumber;
+    debounce_t *debounce = (debounce_t *)params;
+    while (true) {
+        if (xQueueReceive(interruptQueue2, &pinNumber, portMAX_DELAY)) {
+            float current_time_ms = esp_timer_get_time() / 1000; // Convert to milliseconds
+
+            if ((current_time_ms - debounce->last_button_press_time) > DEBOUNCE_DELAY_MS) {
+                debounce->last_button_press_time = current_time_ms;
+                printf("2. Button Pressed\n");
+
+                // Debug statements to check if queue is receiving items properly
+                printf("Received from interruptQueue2: %d\n", pinNumber);
 
                 debounce->last_interrupt_time = current_time_ms;
             }
@@ -85,29 +109,11 @@ void calculateSpeed(TimerHandle_t xTimer) {
             float time_hours = time_diff / (1000.0 * 3600.0);
             float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
             // Calculate speed in km/h
-            float speed_kmph = distance_km / time_hours;
+            speed_kmph = distance_km / time_hours;
 
-            // Update debounce's speed
-            debounce->speed = speed_kmph;
-
-            printf("Calculated Speed: %.2f km/h\n", debounce->speed);
+            printf("Calculated Speed: %.2f km/h\n", speed_kmph);
         } else {
             printf("No valid time difference to calculate speed.\n");
-        }
-    }
-}
-void LED_Control_Task(void *params) {
-    int pinNumber, count = 0;
-    while (true) {
-        if (xQueueReceive(interruptQueue, &pinNumber, portMAX_DELAY)) {
-            debounce_t *debounce = (debounce_t *)params;
-
-            TickType_t current_time = xTaskGetTickCount();
-            if ((current_time - debounce->last_interrupt_time) > pdMS_TO_TICKS(DEBOUNCE_DELAY_MS)) {
-                printf("GPIO %d was pressed %d times. The state is %d\n", pinNumber, count++, gpio_get_level(debounce->pin));
-                gpio_set_level(LED_PIN, gpio_get_level(debounce->pin));
-            }
-            debounce->last_interrupt_time = current_time;
         }
     }
 }
@@ -129,27 +135,25 @@ void app_main(void)
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
 
-    // ============================================= button =============================================
+    // ============================================= button 1 =============================================
 
     // Setup interrupt queue
-    interruptQueue = xQueueCreate(10, sizeof(int));
-    if (interruptQueue == NULL) {
+    interruptQueue1 = xQueueCreate(10, sizeof(int));
+    interruptQueue2 = xQueueCreate(10, sizeof(int));
+
+    if (interruptQueue1 == NULL || interruptQueue2 == NULL) {
         return;
     }
 
-    // Initialize debounce structure
+    // Initialize debounce structure for button 1
     debounce_t debounce;
     debounce.pin = INPUT_PIN;
     debounce.inverted = false;
     debounce.history = 0;
     debounce.last_interrupt_time = 0;
     debounce.last_button_press_time = 0;
-    debounce.speed = 0;
-    debounce.km_traveled = 0.0;
     debounce.start_time_ms = 0;
 
-    esp_rom_gpio_pad_select_gpio(LED_PIN);
-    gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
     esp_rom_gpio_pad_select_gpio(INPUT_PIN);
     gpio_set_direction(INPUT_PIN, GPIO_MODE_INPUT);
     gpio_pullup_en(INPUT_PIN);  // Enable internal pull-up resistor
@@ -157,8 +161,27 @@ void app_main(void)
     gpio_set_intr_type(INPUT_PIN, GPIO_INTR_ANYEDGE); // Change interrupt type to GPIO_INTR_ANYEDGE for detecting both rising and falling edges
 
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler, (void *)INPUT_PIN);
+    gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler1, (void *)INPUT_PIN);
     xTaskCreate(Wheel_Revolution_Task, "Wheel_Revolution_Task", 2048, (void *)&debounce, 1, NULL);
+
+    // ============================================= button 2 =============================================
+    // Initialize debounce structure for button 2
+    debounce_t debounce2;
+    debounce2.pin = SECOND_INPUT_PIN;
+    debounce2.inverted = false;
+    debounce2.history = 0;
+    debounce2.last_interrupt_time = 0;
+    debounce2.last_button_press_time = 0;
+    debounce2.start_time_ms = 0;
+
+    esp_rom_gpio_pad_select_gpio(SECOND_INPUT_PIN);
+    gpio_set_direction(SECOND_INPUT_PIN, GPIO_MODE_INPUT);
+    gpio_pullup_en(SECOND_INPUT_PIN);  // Enable internal pull-up resistor
+    gpio_pulldown_dis(SECOND_INPUT_PIN);  // Disable internal pull-down resistor
+    gpio_set_intr_type(SECOND_INPUT_PIN, GPIO_INTR_ANYEDGE); // Change interrupt type to GPIO_INTR_ANYEDGE for detecting both rising and falling edges
+
+    gpio_isr_handler_add(SECOND_INPUT_PIN, gpio_interrupt_handler2, (void *)SECOND_INPUT_PIN);
+    xTaskCreate(Second_Button_Handle, "Second_Button_Handle", 2048, (void *)&debounce2, 1, NULL);
 
     // Initialize start time in microseconds
     debounce.start_time_ms = esp_timer_get_time() / 1000;
@@ -177,28 +200,27 @@ void app_main(void)
     float average_speed_kmph = 0.0;
     while (1)
     {
-        // Clear the screen
-        ssd1306_clear_screen(&dev, false);
+        // // Clear the screen
+        // ssd1306_clear_screen(&dev, false);
 
         // Display speed in larger font at the center
         char speed_str[20];
-        snprintf(speed_str, sizeof(speed_str), "Speed: %.2f", debounce.speed);
+        snprintf(speed_str, sizeof(speed_str), "Speed: %.2f", speed_kmph);
         ssd1306_display_text(&dev, 3, speed_str, strlen(speed_str), true);
 
         // Display distance below the speed text
         char distance_str[20];
-        snprintf(distance_str, sizeof(distance_str), "Km : %.3f", debounce.km_traveled);
+        snprintf(distance_str, sizeof(distance_str), "Km : %.3f", km_traveled);
         ssd1306_display_text(&dev, 5, distance_str, strlen(distance_str), false);
 
         // Display average speed below the distance text
-        if (debounce.km_traveled > 0) {
+        if (km_traveled > 0) {
             total_time_hours = (float)((float)(esp_timer_get_time()/1000) - debounce.start_time_ms) / (1000.0 * 3600.0);
-            average_speed_kmph = debounce.km_traveled / total_time_hours;
+            average_speed_kmph = km_traveled / total_time_hours;
 
             char average_speed_str[20];
             snprintf(average_speed_str, sizeof(average_speed_str), "Avg: %.2f", average_speed_kmph);
             ssd1306_display_text(&dev, 7, average_speed_str, strlen(average_speed_str), false);
-            printf("Average Speed: %.4f km/h\n", average_speed_kmph);
         }
 
 
