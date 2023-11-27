@@ -249,7 +249,7 @@ void Second_Button_Handle(void *params) {
                         if (store_result != ESP_OK) {
                             printf("Error (%s) storing km_traveled in NVS!\n", esp_err_to_name(store_result));
                         }
-                    } else {
+                    } else { // SHORT PRESS
                         current_display_state = (current_display_state + 1) % 3; // Cycle through display states
                     }
                 }
