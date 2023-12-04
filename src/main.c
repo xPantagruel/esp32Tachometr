@@ -28,18 +28,31 @@
 #define LONG_PRESS_DURATION_MS 1000
 #define WHEEL_DIAMETER_CM 200
 #define TIMER_INTERVAL_MS 1000 // 1 second interval for speed calculation
+
+/**
+ * @brief Structure representing debounce configuration for a button.
+ *
+ * This structure holds information related to button debouncing
+ * and GPIO pin configuration used for handling button interrupts.
+ */
 typedef struct {
-    uint8_t pin; // GPIO pin number                                                                                                                                                                                          
-    bool inverted; // true if button is active low
-    TickType_t last_interrupt_time; // Last interrupt time in milliseconds
-    TickType_t last_button_press_time; // Last button press time in milliseconds
-    uint64_t start_time_ms; // To track start time in milliseconds for calculating time spent
+    uint8_t pin; /**< GPIO pin number. */
+    bool inverted; /**< Indicates whether the button is active low (true) or active high (false). */
+    TickType_t last_interrupt_time; /**< Time of the last interrupt in milliseconds. */
+    TickType_t last_button_press_time; /**< Time of the last button press in milliseconds. */
+    uint64_t start_time_ms; /**< Start time in milliseconds for calculating time spent. */
 } debounce_t;
 
+/**
+ * @brief Enum representing different display states.
+ *
+ * These states define various display modes or screens that can be shown
+ * on a display or user interface, such as speed, distance traveled, average speed
+ */
 enum DisplayState {
-    DISPLAY_SPEED,
-    DISPLAY_KM_TRAVELED,
-    DISPLAY_AVG_SPEED
+    DISPLAY_SPEED, /**< Display state showing speed information. */
+    DISPLAY_KM_TRAVELED, /**< Display state showing distance traveled information. */
+    DISPLAY_AVG_SPEED /**< Display state showing average speed information. */
 };
 
 float speed_kmph = 0.0; // Track the speed in km/h
@@ -54,16 +67,40 @@ enum DisplayState current_display_state = DISPLAY_SPEED; // Initialize to displa
 
 TimerHandle_t speedTimer; // Timer to calculate speed every second
 
+/**
+ * @brief Interrupt handler for GPIO 1.
+ *
+ * This function is an interrupt handler for GPIO 1.
+ * It sends data to interruptQueue1.
+ *
+ * @param args A pointer to the argument associated with the interrupt.
+ */
 static void IRAM_ATTR gpio_interrupt_handler1(void *args) {
     int pinNumber = (int)args;
     xQueueSendFromISR(interruptQueue1, &pinNumber, NULL);
 }
+
+/**
+ * @brief Interrupt handler for GPIO 2.
+ *
+ * This function is an interrupt handler for GPIO 2.
+ * It sends data to interruptQueue2.
+ *
+ * @param args A pointer to the argument associated with the interrupt.
+ */
 static void IRAM_ATTR gpio_interrupt_handler2(void *args) {
     int pinNumber = (int)args;
     xQueueSendFromISR(interruptQueue2, &pinNumber, NULL);
 }
 
-// Function to store km_traveled value in NVS
+/**
+ * @brief Store the value of km_traveled in the Non-Volatile Storage (NVS).
+ *
+ * This function stores the value of km_traveled in the NVS.
+ *
+ * @param km_traveled The value of kilometers traveled to be stored in NVS.
+ * @return esp_err_t Returns ESP_OK on success, or an error code if operation fails.
+ */
 esp_err_t store_km_traveled(float km_traveled) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
@@ -82,7 +119,15 @@ esp_err_t store_km_traveled(float km_traveled) {
     return err;
 }
 
-// Function to get km_traveled value from NVS
+/**
+ * @brief Get the value of km_traveled from the Non-Volatile Storage (NVS).
+ *
+ * This function retrieves the value of km_traveled from the NVS.
+ *
+ * @param km_traveled Pointer to a float variable where the retrieved value will be stored.
+ * @return esp_err_t Returns ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if the value is not initialized,
+ * or an error code if the operation fails.
+ */
 esp_err_t get_km_traveled(float *km_traveled) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
@@ -111,7 +156,14 @@ esp_err_t get_km_traveled(float *km_traveled) {
     return err;
 }
 
-// Function to store time spent value in NVS
+/**
+ * @brief Store the value of time_spent_ms in the Non-Volatile Storage (NVS).
+ *
+ * This function initializes NVS, stores the value of time_spent_ms in NVS, and closes the NVS handle.
+ *
+ * @param time_spent_ms The value of time spent in milliseconds to be stored in NVS.
+ * @return esp_err_t Returns ESP_OK on success, or an error code if the operation fails.
+ */
 esp_err_t store_time_spent(uint64_t  time_spent_ms) {
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) {
@@ -135,7 +187,15 @@ esp_err_t store_time_spent(uint64_t  time_spent_ms) {
     return err;
 }
 
-// Function to get time spent from NVS
+/**
+ * @brief Get the value of time spent from the Non-Volatile Storage (NVS).
+ *
+ * This function initializes NVS, retrieves the value of time spent from NVS, and closes the NVS handle.
+ *
+ * @param time_spent_ms Pointer to a uint64_t variable where the retrieved value will be stored.
+ * @return esp_err_t Returns ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if the value is not initialized,
+ * or an error code if the operation fails.
+ */
 esp_err_t get_time_spent(uint64_t  *time_spent_ms) {
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) {
@@ -167,7 +227,16 @@ esp_err_t get_time_spent(uint64_t  *time_spent_ms) {
     return err;
 }
 
-// Task to calculate speed and distance traveled
+/**
+ * @brief Task for handling wheel rotation interrupts and calculating speed and distance.
+ *
+ * This function is responsible for processing wheel rotation interrupts,
+ * calculating speed and distance traveled, and storing the distance traveled
+ * in Non-Volatile Storage (NVS).
+ *
+ * @param params A pointer to the parameters passed to the task.
+ *               It is expected to be a pointer to a 'debounce_t' structure.
+ */
 void Wheel_Rotation_Task(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -198,7 +267,16 @@ void Wheel_Rotation_Task(void *params) {
     }
 }
 
-// Timer callback function to calculate speed every second
+/**
+ * @brief Timer callback function to calculate speed periodically.
+ *
+ * This function is a callback executed by a timer at regular intervals
+ * to calculate the speed based on wheel rotation data. It servers as a
+ * updating speed value after a certain time interval from the last button
+ * pressed.
+ *
+ * @param xTimer The handle of the timer invoking this callback.
+ */
 void calculateSpeed(TimerHandle_t xTimer) {
     debounce_t *debounce = (debounce_t *)pvTimerGetTimerID(xTimer);
 
@@ -207,7 +285,7 @@ void calculateSpeed(TimerHandle_t xTimer) {
     // Check if more than 1 second has passed since the last interrupt
     if ((current_time_ms - debounce->last_interrupt_time) >= TIMER_INTERVAL_MS) {
         float time_diff = current_time_ms - debounce->last_interrupt_time;
-        if (time_diff > 0 && debounce->last_button_press_time > 0) { // Check for non-zero time difference to avoid division by zero
+        if (time_diff > 0 && debounce->last_button_press_time > 0 && speed_kmph != 0.0) { // Check for non-zero time difference to avoid division by zero
             float time_hours = time_diff / (1000.0 * 3600.0);
             float distance_km = WHEEL_DIAMETER_CM / 100000.0; // Convert to kilometers
             // Calculate speed in km/h
@@ -216,9 +294,17 @@ void calculateSpeed(TimerHandle_t xTimer) {
     }
 }
 
-// Task to handle button 2 press
-//      Short press: Cycle through display states
-//      Long press: Reset km_traveled and time_spent
+/**
+ * @brief Task to handle actions for button 2 press.
+ *
+ * This function manages the behavior associated with button 2 press events.
+ * It distinguishes between short and long button presses and performs different actions:
+ * - Short press: Cycles through display states
+ * - Long press: Resets km_traveled, time_spent, and speed_kmph and stores km_traveled in NVS
+ *
+ * @param params A pointer to the parameters passed to the task.
+ *               It is expected to be a pointer to a 'debounce_t' structure.
+ */
 void Second_Button_Handle(void *params) {
     int pinNumber;
     debounce_t *debounce = (debounce_t *)params;
@@ -244,6 +330,7 @@ void Second_Button_Handle(void *params) {
                     if (pressDuration >= pdMS_TO_TICKS(LONG_PRESS_DURATION_MS)) { // LONG PRESS
                         km_traveled = 0.0; // Reset km_traveled
                         time_spent_ms = 0.0; // Reset time_spent
+                        speed_kmph = 0.0; // Reset speed
                         // store km_traveled value in NVS
                         esp_err_t store_result = store_km_traveled(km_traveled);
                         if (store_result != ESP_OK) {
